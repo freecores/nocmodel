@@ -31,7 +31,6 @@
 # 03-03-2011 : (OD) initial release
 #
 
-import matplotlib.pyplot as plt
 import myhdl
 import logging
 

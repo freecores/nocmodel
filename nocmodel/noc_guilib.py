@@ -40,8 +40,13 @@ This module declares functions to draw graphical representations of
 NoCmodel objects.
 
 """
+try:
+    import matplotlib.pyplot as plt
+    has_matplotlib = True
+except:
+    print("Matplotlib package not found. Drawing functions will not work.")
+    has_matplotlib = False
 
-import matplotlib.pyplot as plt
 import networkx as nx
 
 from noc_base import *
@@ -58,6 +63,10 @@ def draw_noc(noc, rectangular=True, nodepos=None):
     * nodepos: Optional dictionary where keys are router's indexes and values 
       are tuples with x and y positions.
     """
+    if not has_matplotlib:
+        print("Function not available")
+        return None
+
     # node positions
     if rectangular:
         if nodepos == None:

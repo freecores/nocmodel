@@ -55,5 +55,6 @@ setup(name='nocmodel',
         classifiers=filter(None, classifiers.split("\n")),
         packages=[
             'nocmodel',
+            'nocmodel.basicmodels',
           ],
       )
