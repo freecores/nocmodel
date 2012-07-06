@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 #
-# NoC TLM simulation support - Utilities
+# NoC TBM simulation support - Utilities
 #   This module declares additional helper functions 
 #
 # Author:  Oscar Diaz
-# Version: 0.1
-# Date:    03-03-2011
+# Version: 0.2
+# Date:    17-03-2011
 
 #
 # This code is free software; you can redistribute it and/or
@@ -32,30 +32,40 @@
 # 03-03-2011 : (OD) initial release
 #
 
-from noc_tlm_base import *
+"""
+=============================
+NoCmodel TBM simulation utils
+=============================
+  
+This module declares additional helper functions.
+  
+* Function 'add_tbm_basic_support'
+"""
+
+from noc_tbm_base import *
 from nocmodel.basicmodels import *
 
 # helper functions
-def add_tlm_basic_support(instance, **kwargs):
+def add_tbm_basic_support(instance, **kwargs):
     """
-    This function will add for every object in noc_instance a noc_tlm object
+    This function will add for every object in noc_instance a noc_tbm object
     """
     if isinstance(instance, noc):
         # add simulation object
-        instance.tlmsim = noc_tlm_simulation(instance, **kwargs)
-        # and add tlm objects recursively
+        instance.tbmsim = noc_tbm_simulation(instance, **kwargs)
+        # and add tbm objects recursively
         for obj in instance.all_list():
             altkwargs = kwargs
             altkwargs.pop("log_file", None)
             altkwargs.pop("log_level", None)
-            add_tlm_basic_support(obj, **kwargs)
+            add_tbm_basic_support(obj, **kwargs)
     elif isinstance(instance, ipcore):
-        instance.tlm = basic_ipcore_tlm(instance, **kwargs)
+        instance.tbm = basic_ipcore_tbm(instance, **kwargs)
         # don't forget internal channel
-        instance.channel_ref.tlm = basic_channel_tlm(instance.channel_ref, **kwargs)
+        instance.channel_ref.tbm = basic_channel_tbm(instance.channel_ref, **kwargs)
     elif isinstance(instance, router):
-        instance.tlm = basic_router_tlm(instance, **kwargs)
+        instance.tbm = basic_router_tbm(instance, **kwargs)
     elif isinstance(instance, channel):
-        instance.tlm = basic_channel_tlm(instance, **kwargs)
+        instance.tbm = basic_channel_tbm(instance, **kwargs)
     else:
-        print "Unsupported object: type %s" % type(instance)
+        raise TypeError("Unsupported object: type %s" % type(instance))

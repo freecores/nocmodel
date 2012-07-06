@@ -5,8 +5,8 @@
 # NoCmodel package
 #
 # Author:  Oscar Diaz
-# Version: 0.1
-# Date:    03-03-2011
+# Version: 0.2
+# Date:    05-07-2012
 
 #
 # This code is free software; you can redistribute it and/or
@@ -29,6 +29,7 @@
 # Changelog:
 #
 # 03-03-2011 : (OD) initial release
+# 14-03-2011 : (OD) support for code generation 
 #
 
 """
@@ -40,8 +41,11 @@ This package includes:
   
 * Module noc_base: NoCmodel Base Objects
 * Module noc_guilib: NoCmodel Graphic utilities
-* Module noc_tlm_base: NoCmodel TLM simulation support
-* Module noc_tlm_utils: helper functions for TLM simulation
+* Module noc_tbm_base: NoCmodel TBM simulation support
+* Module noc_tbm_utils: helper functions for TBM simulation
+* Module noc_codegen_base: NoCmodel base for code generation support
+* Module noc_codegen_vhdl: VHDL support for code generation
+* Module noc_helpers: Utility functions
 * Package basicmodels: basic examples of NoC objects (not imported by default)
 """
 
@@ -51,7 +55,11 @@ import networkx as nx
 # provided modules
 from noc_base import *
 from noc_guilib import *
-from noc_tlm_base import *
-from noc_tlm_utils import *
+from noc_tbm_base import *
+from noc_tbm_utils import *
+from noc_rtl_myhdl import *
+from noc_codegen_base import *
+from noc_codegen_vhdl import *
+from noc_helpers import *
 
-__version__ = "0.1"
+__version__ = "0.2"

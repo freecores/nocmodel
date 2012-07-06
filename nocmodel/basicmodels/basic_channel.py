@@ -3,7 +3,7 @@
 
 #
 # Basic Channel model
-#  * TLM model
+#  * TBM model
 #
 # Author:  Oscar Diaz
 # Version: 0.1
@@ -33,17 +33,17 @@
 #
 
 """
-Basic channel TLM model
+Basic channel TBM model
 """
 
-from nocmodel.noc_tlm_base import *
+from nocmodel.noc_tbm_base import *
 
 # ---------------------------
-# Channel TLM model
+# Channel TBM model
 
-class basic_channel_tlm(noc_tlm_base):
+class basic_channel_tbm(noc_tbm_base):
     """
-    TLM model of a NoC channel. It models a simple FIFO channel with
+    TBM model of a NoC channel. It models a simple FIFO channel with
     adjustable delay. This channel will move any kind of data as a whole, but
     ideally will move packet objects.
         
@@ -53,8 +53,8 @@ class basic_channel_tlm(noc_tlm_base):
     Notes:
     *This model is completely behavioral
     """
-    def __init__(self, channel_ref, channel_delay=1):
-        noc_tlm_base.__init__(self)
+    def __init__(self, channel_ref, channel_delay=2):
+        noc_tbm_base.__init__(self)
         if isinstance(channel_ref, channel):
             self.channel_ref = channel_ref
             self.graph_ref = channel_ref.graph_ref
@@ -77,7 +77,7 @@ class basic_channel_tlm(noc_tlm_base):
         if self.channel_delay > 0:
             self.has_delay = True
             self.delay_fifo = []
-            self.delay_fifo_max = 10 # error-catch parameter, avoid fifo excessive growing
+            self.delay_fifo_max = 4 # error-catch parameter, avoid fifo excessive growing
             self.delay_event = myhdl.Signal(False)
             # implement delay generator
             @myhdl.instance
@@ -88,18 +88,20 @@ class basic_channel_tlm(noc_tlm_base):
                         timed_packet = self.delay_fifo.pop(0)
                         # calculate the exact delay value
                         next_delay = self.channel_delay - (myhdl.now() - timed_packet[0])
-                        if next_delay <= 0:
+                        # time could be 0, when the packets arrive from both endpoints
+                        # at the same time. In that case don't yield
+                        if next_delay < 0:
                             self.debug("delay_generator CATCH next_delay is '%d'" % next_delay)
-                        else:
+                        elif next_delay > 0:
                             yield myhdl.delay(next_delay)
                         self.debug("delay_generator sending delayed packet (by %d), timed_packet format %s" % (next_delay, repr(timed_packet)) )
                         # use send()
                         retval = self.send(*timed_packet[1:])
                         # what to do in error case? report and continue
-                        if retval != noc_tlm_errcodes.no_error:
+                        if retval != noc_tbm_errcodes.no_error:
                             self.error("delay_generator send returns code '%d'?" % retval )
                     self.delay_event.next = False
-                    yield self.delay_event
+                    yield self.delay_event.posedge
             self.generators.append(delay_generator)
 
         self.debugstate()
@@ -118,20 +120,26 @@ class basic_channel_tlm(noc_tlm_base):
             thedest = self.graph_ref.get_router_by_address(dest)
             if thedest == False:
                 self.error("-> send: dest %s not found" % repr(dest) )
-                return noc_tlm_errcodes.tlm_badcall_send
+                return noc_tbm_errcodes.tbm_badcall_send
         elif isinstance(dest, (router, ipcore)):
             thedest = dest
         else:
             self.error("-> send: what is dest '%s'?" % repr(dest) )
-            return noc_tlm_errcodes.tlm_badcall_send
+            return noc_tbm_errcodes.tbm_badcall_send
 
         # check dest as one of the channel endpoints
         if thedest not in self.endpoints:
             self.error("-> send: object %s is NOT one of the channel endpoints [%s,%s]" % (repr(thedest), repr(self.endpoints[0]), repr(self.endpoints[1])) )
-            return noc_tlm_errcodes.tlm_badcall_send
+            return noc_tbm_errcodes.tbm_badcall_send
+            
+        # call trace functions
+        traceargs = {"self": self, "src": src, "dest": dest, "packet": packet, "addattrs": addattrs}
+        for f in self.tracesend:
+            if callable(f):
+                f(traceargs)
 
         # call recv on the dest object
-        retval = thedest.tlm.recv(self.channel_ref, dest, packet, addattrs)
+        retval = thedest.tbm.recv(self.channel_ref, dest, packet, addattrs)
 
         # Something to do with the retval? Only report it.
         self.debug("-> send returns code '%s'" % repr(retval))
@@ -150,17 +158,23 @@ class basic_channel_tlm(noc_tlm_base):
             thesrc = self.graph_ref.get_router_by_address(src)
             if thesrc == False:
                 self.error("-> recv: src %s not found" % repr(src) )
-                return noc_tlm_errcodes.tlm_badcall_recv
+                return noc_tbm_errcodes.tbm_badcall_recv
         elif isinstance(src, (router, ipcore)):
             thesrc = src
         else:
             self.error("-> recv: what is src '%s'?" % repr(src) )
-            return noc_tlm_errcodes.tlm_badcall_recv
+            return noc_tbm_errcodes.tbm_badcall_recv
 
         # check src as one of the channel endpoints
         if thesrc not in self.endpoints:
             self.error("-> recv: object %s is NOT one of the channel endpoints [%s,%s]" % (repr(thesrc), repr(self.endpoints[0]), repr(self.endpoints[1])) )
-            return noc_tlm_errcodes.tlm_badcall_recv
+            return noc_tbm_errcodes.tbm_badcall_recv
+            
+        # call trace functions        
+        for f in self.tracerecv:
+            if callable(f):
+                traceargs = {"self": self, "src": src, "dest": dest, "packet": packet, "addattrs": addattrs}
+                f(traceargs)
 
         # calculate the other endpoint
         end_index = self.endpoints.index(thesrc) - 1
@@ -174,7 +188,7 @@ class basic_channel_tlm(noc_tlm_base):
                 self.warning("-> recv: delay_fifo is getting bigger! current size is %d" % len(self.delay_fifo) )
             # trigger event
             self.delay_event.next = True
-            retval = noc_tlm_errcodes.no_error
+            retval = noc_tbm_errcodes.no_error
         else:
             # use send() call directly
             router_dest = self.endpoints[end_index]

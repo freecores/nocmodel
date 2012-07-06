@@ -5,8 +5,8 @@
 # NoC Base Objects
 #
 # Author:  Oscar Diaz
-# Version: 0.1
-# Date:    03-03-2011
+# Version: 0.2
+# Date:    05-07-2012
 
 #
 # This code is free software; you can redistribute it and/or
@@ -29,12 +29,13 @@
 # Changelog:
 #
 # 03-03-2011 : (OD) initial release
+# 05-07-2012 : (OD) intercon class, major changes, various bugfixes
 #
 
 """
-================
+=====================
 NoCmodel Base Objects
-================
+=====================
   
 This module declares classes used on a Network-on-chip representation:
   
@@ -42,11 +43,15 @@ This module declares classes used on a Network-on-chip representation:
     * Router base class
     * Channel base class
     * IPCore base class
+    * Intercon base class
     * Protocol base class
     * Packet class
 """
 
 import networkx as nx
+from myhdl import Signal, SignalType, intbv, bin
+from collections import OrderedDict
+from math import ceil as mathceil
 
 class noc(nx.Graph):
     """
@@ -61,6 +66,16 @@ class noc(nx.Graph):
         NoCmodel constructor
         """
         nx.Graph.__init__(self, **kwargs)
+        if not hasattr(self, "name"):
+            self.name = ""
+        if not hasattr(self, "description"):
+            self.description = ""
+        
+    def __repr__(self):
+        if self.name != "":
+            return "<%s '%s'>" % (self.__class__.__name__, self.name)
+        else:
+            return "<%s at '%d'>" % (self.__class__.__name__, id(self))
 
     # objects management functions
     def add_router(self, name="", with_ipcore=False, **kwargs):
@@ -354,27 +369,36 @@ class noc(nx.Graph):
     def router_list(self):
         l = []
         for i in self.nodes_iter(data=True):
-            l.append(i[1]["router_ref"])
+            r = i[1].get("router_ref", None)
+            if r is not None:
+                l.append(r)
         return l
 
     def ipcore_list(self):
         l = []
-        for i in self.nodes_iter(data=True):
-            if i[1]["router_ref"].ipcore_ref != None:
-                l.append(i[1]["router_ref"].ipcore_ref)
+        for i in self.router_list():
+            ip = getattr(i, "ipcore_ref", None)
+            if ip is not None:
+                l.append(ip)
         return l
 
-    def channel_list(self):
-        # this function does not list ipcore channels
+    def channel_list(self, with_ipcore_channel=False):
         l = []
         for i in self.edges_iter(data=True):
-            l.append(i[2]["channel_ref"])
+            ch = i[2].get("channel_ref", None)
+            if ch is not None:
+                l.append(ch)
+        if with_ipcore_channel:
+            for i in self.ipcore_list():
+                ch = getattr(i, "channel_ref", None)
+                if ch is not None:
+                    l.append(ch)
         return l
-        
-    def all_list(self):
+
+    def all_list(self, with_ipcore_channel=False):
         l = self.router_list()
         l.extend(self.ipcore_list())
-        l.extend(self.channel_list())
+        l.extend(self.channel_list(with_ipcore_channel))
         return l
 
     # query functions
@@ -383,6 +407,14 @@ class noc(nx.Graph):
             if r.address == address:
                 return r
         return False
+        
+    # update functions
+    def update_nocdata(self):
+        for r in self.router_list():
+            r.update_ports_info()
+            r.update_routes_info()
+        for ch in self.channel_list(True):
+            ch.update_ports_info()
 
     # hidden functions
     def _add_router_from_node(self, node, name="", router_ref=None, **kwargs):
@@ -393,7 +425,7 @@ class noc(nx.Graph):
         if router_ref is None:
             # index comes from node
             if name == "":
-                name = "R_%d" % node
+                name = "R_%s" % repr(node)
             routernode = router(index=node, name=name, graph_ref=self, **kwargs)
         else:
             if not isinstance(router_ref, router):
@@ -449,6 +481,15 @@ class nocobject():
     This base class is used to implement common methods for NoC objects.
     Don't use directly.
     """
+    name = ""
+    description = ""
+    
+    def __repr__(self):
+        if self.name != "":
+            return "<%s '%s'>" % (self.__class__.__name__, self.name)
+        else:
+            return "<%s at '%d'>" % (self.__class__.__name__, id(self))
+    
     def get_protocol_ref(self):
         """
         Get protocol object for this instance
@@ -460,6 +501,25 @@ class nocobject():
             return self.graph_ref.protocol_ref
         # nothing?
         return None
+
+    def get_address(self):
+        """
+        Get address related to this object. If it is a router or a ipcore,
+        returns the address in the router. If it is a channel, return a list
+        or pair addresses from its endpoints. If it is another object without
+        address, return None.
+        """
+        if hasattr(self, "address"):
+            return self.address
+        else:
+            # try ipcore
+            if isinstance(self, ipcore):
+                return self.router_ref.address
+            # try channel
+            if isinstance(self, channel):
+                return [x.get_address() for x in self.endpoints]
+            # nothing?
+            return None
 
 class ipcore(nocobject):
     """
@@ -490,6 +550,29 @@ class ipcore(nocobject):
         self.graph_ref = None
         for key in kwargs.keys():
             setattr(self, key, kwargs[key])
+        # ports structure
+        self.ports = {}
+            
+    # update functions: call them when the underlying NoC structure
+    # has changed
+    def update_ports_info(self):
+        """
+        Update the dictionary "ports". For an ipcore, it only has one element
+        to its router.
+        
+        Ports dictionary has the following structure:
+        * key: address of its related router
+        * value: dictionary with the following keys:
+            * "peer" (required): reference to its router
+            * "channel" (required): reference to the channel that connects this 
+              ipcore and its router.
+            * Optional keys can be added to this dictionary with the same 
+              meaning as other ports.
+        """
+        myaddr = self.get_address()
+        self.ports = {myaddr: {}}
+        self.ports[myaddr]["peer"] = self.router_ref
+        self.ports[myaddr]["channel"] = self.channel_ref 
 
 class router(nocobject):
     """
@@ -655,12 +738,13 @@ class channel(nocobject):
       router and one ipcore (channel don't have any edge object).
 
     Attributes:
-    * name
-    * index: optional index on a noc object. Must have an index when it has
+    * name :
+    * index : optional index on a noc object. Must have an index when it has
       a related edge in the graph model (and allowing it to be able to do
       channel searching). None means it is an ipcore related channel
-    * graph_ref optional reference to its graph model
-    * endpoints optional two-item list with references to the connected objects
+    * graph_ref : optional reference to its graph model
+    * endpoints : optional two-item list with references to the connected objects
+    * intercon_class : optional reference to a intercon class used in this channel.
     """
     def __init__(self, name, index=None, **kwargs):
         # Basic properties
@@ -669,8 +753,55 @@ class channel(nocobject):
         # Default values
         self.graph_ref = None
         self.endpoints = [None, None]
+        self.intercon_class = intercon
+        self.intercon_class_defargs = {}
         for key in kwargs.keys():
             setattr(self, key, kwargs[key])
+        # ports structure
+        self.ports = {}
+        
+    # update functions: call them when the underlying NoC structure
+    # has changed
+    def update_ports_info(self, intercon_class=None):
+        """
+        Update the dictionary "ports": For a channel, there is two 
+        elements referencing both connected objects 
+        
+        Ports dictionary has the following structure:
+        * key: address of the router related with this channel, or None
+            for a ipcore object.
+        * value: dictionary with the following keys:
+            * "peer" (required): reference to the router or ipcore
+            * "channel" (required): reference to self
+            * "intercon" (required for RTL sim and codegen) 
+            * Optional keys can be added to this dictionary.
+
+        Arguments :
+        * intercon_class : class reference to generate intercon instances
+        NOTE: 
+        * This update will change and DESTROY existing intercon objects.
+        """
+        if intercon_class is None:
+            intercon_class = self.intercon_class
+        if not issubclass(intercon_class,  intercon):
+            raise TypeError("intercon_class must be subclass of intercon.")
+        self.ports = {}
+        for endp in self.endpoints:
+            if isinstance(endp, ipcore):
+                idx = None
+            elif isinstance(endp, router):
+                idx = endp.get_address()
+            else:
+                raise ValueError("endpoints has an inconsistent state (%s)." % repr(endp))
+            self.ports[idx] = {}
+            self.ports[idx]["peer"] = endp
+            self.ports[idx]["channel"] = self
+            # TEMPORAL WORKAROUND: use intercon_class.complement on ipcore side
+            # ONLY on case of ipcore channels.
+            if idx == None and hasattr(intercon_class, "complement"):
+                self.ports[idx]["intercon"] = intercon_class.complement(name=endp.name, **self.intercon_class_defargs)
+            else:
+                self.ports[idx]["intercon"] = intercon_class(name=endp.name, **self.intercon_class_defargs)
 
     def is_ipcore_link(self):
         """
@@ -684,7 +815,294 @@ class channel(nocobject):
                 return True
         return False
         
-class protocol(nocobject):
+# ****************************************
+# Generic models for abstract NoC elements
+# ****************************************
+
+# physical and data-link layers
+class intercon():
+    """
+    Interconnection base object
+
+    This object models the interconnection that use a port in a NoC object.
+    It defines at physical and data-link level how is the connection between
+    ports of the NoC object.
+
+    Relations with other objects:
+    * Each port of a NoC object (routers, channels and ipcores) must have
+        an instance of a intercon object (object.ports[index]["intercon"])
+    * A NoC model may have one or various references to intercon classes, in 
+        order to provide object constructors for different ports in the NoC
+        objects.
+
+    Attributes:
+    * name :
+    * intercon_type : string to identify intercon type
+    * complement : reference to a class that provides its reciprocal intercon
+    * description : a string with a brief description
+    * long_desc : a long string with a detailed description, usually formatted
+      in reST (as any Python help string).
+    * signals : dictionary with the list of signals. The structure is:
+        * keys : signal's name
+        * values :
+            * "width" : bit length of this signal
+            * "direction" : "in" or "out"
+            * "signal_obj" : (only simulation) MyHDL signal reference
+            * "description" : 
+            * Optional keys can be added to this dictionary.
+
+    Notes: 
+    * To avoid excessive duplication of intercon objects, we assume the following
+      convention for symmetrical intercons: only channels will create new 
+      instances; routers and ipcores only can hold references to this instances.
+      In case of asymmetrical intercons (master/slave schemes), routes and 
+      ipcores can create new instances, based on intercon type on channel.
+    """
+    def __init__(self, name="", **kwargs):
+        self.name = name
+        self.intercon_type = ""
+        self.description = ""
+        self.long_desc = ""
+        for key in kwargs.keys():
+            setattr(self, key, kwargs[key])
+        # complementary class: None means myself
+        self.complement = None
+        # signals info (ordered dict)
+        self.signals = OrderedDict()
+        
+    def __repr__(self):
+        if self.name != "":
+            return "<%s '%s'>" % (self.__class__.__name__, self.name)
+        else:
+            return "<%s at '%d'>" % (self.__class__.__name__, id(self))
+            
+    def add_signal(self, signalname, direction, bitwidth, signalref=None, description=""):
+        """
+        Add a signal entry to the intercon
+        
+        Arguments:
+        * signalname: signal name on this intercon
+        * direction: "in" or "out"
+        * bitwidth: must be >= 1
+        * signalref: optional MyHDL signal
+        * description: 
+        
+        Returns: 
+        * The contents of signalref
+        """
+        if not isinstance(signalname, str):
+            raise ValueError("Signalname must be an string (not %s)" % repr(signalname))
+        if direction not in ("in", "out"):
+            raise ValueError("Direction must be either 'in' or 'out' (not %s)" % repr(direction))
+        if bitwidth <= 0:
+            raise ValueError("Bitwidth must be greater than 0 (not %s)" % repr(bitwidth))
+        
+        if signalref is not None:
+            if not isinstance(signalref, SignalType):
+                raise ValueError("Signalref %s must be a MyHDL Signal (not %s, type %s)" % (signalname, repr(signalref), type(signalref)))
+                
+        self.signals[signalname] = {"width": bitwidth, "direction": direction, "signal_obj": signalref, "description": description}
+        
+        return signalref
+
+    def get_signal_info(self, signalname, field=None):
+        """
+        Search the signal in the intercon and return signal information.
+        Raise exceptions if the signal is not found, or if the field doesn't
+        exist for this signal.
+        
+        Arguments:
+        * signalname: signal name on this intercon
+        * field: particular key of this signal info. None to return
+                all fields in a dict.
+        
+        Returns: 
+        * A dict with the signal information, if field is None.
+        * The particular object with the key "field" in the signal 
+            info dict.
+        """
+        if signalname not in self.signals:
+            raise KeyError("Signal '%s' not found" % signalname)
+        if field is None:
+            return self.signals[signalname]
+        else:
+            if field not in self.signals[signalname]:
+                raise KeyError("Signal '%s': field %s not found" % (signalname, repr(field)))
+            else:
+                return self.signals[signalname][field]
+                
+    def get_signal_ref(self, signalname=None):
+        """
+        Return the MyHDL signal object
+        
+        Arguments:
+        * signalname: name to search, or None
+        
+        Returns:
+        * The signal reference
+        * If signalname is None, returns a dict with all available
+            signal objects.
+        """
+        if signalname is not None:
+            return self.get_signal_info(signalname, "signal_obj")
+        else:
+            # dict with all available MyHDL signal references
+            retval = OrderedDict()
+            for key, val in self.signals.iteritems():
+                if isinstance(val["signal_obj"], SignalType):
+                    retval[key] = val["signal_obj"]
+            return retval
+                
+    def get_signal_allnames(self):
+        """
+        Return a list of signal names
+        """
+        return self.signals.keys()
+                
+    def create_myhdl_signals(self):
+        """
+        Make MyHDL Signal objects for each signal entry.
+        
+        Returns: A dict with all the created signal objects
+        Note: Previous signal objects will be *unreferenced*.
+        """
+        retval = OrderedDict()
+        for key, sig in self.signals.iteritems():
+            # use bool for 1-bit signals
+            if sig["width"] == 1:
+                sig["signal_obj"] = Signal(bool(0))
+            else:
+                sig["signal_obj"] = Signal(intbv(0)[sig["width"]:])
+            retval[key] = sig["signal_obj"]
+        return retval
+            
+    def get_complement_signal(self, signalname):
+        """
+        Get the signal name that should be connected to this signal when 
+        connecting two intercon.
+        
+        Arguments:
+        * signalname: signal name of this intercon
+        
+        Return: a string with the name of a signal from a complementary intercon.
+        """
+        return None
+            
+    def create_complementary(self, newname="", **kwargs):
+        """
+        Create a instance of a complementary type
+        
+        Arguments:
+        * newname : optional new name for the created object. By default use
+          the same name as self.
+        * optional list of arguments to use for new object. By default the 
+          created object copy its attributes from this object.
+        """
+        # prepare list of arguments
+        if newname == "":
+            newname = self.name
+        if "name" not in kwargs:
+            kwargs["name"] = newname
+        # extract list of attributes, excluding some...
+        names = filter(lambda s: s[1] != "_", dir(self))
+        names = filter(lambda s: s not in ("name", "intercon_type", "complement", "signals", "sigmapping"), names)
+        # and, if not defined in kwargs, use self attributes
+        for s in names:
+            if s not in kwargs:
+                kwargs[s] = getattr(self, s)
+
+        if self.complement is None:
+            # I'm my complement? like a object clone
+            # use my class reference, so the constructor is correctly called.
+            return self.__class__(**kwargs)
+        else:
+            return self.complement(**kwargs)
+
+# Special intercon to implement a signal container
+class signalset(intercon):
+    """
+    Signal container based on an intercon. 
+
+    Attributes:
+    * name :
+    * intercon_type : "signalset"
+    * complement : Without complement intercon by default
+    * description : 
+    * signals : dictionary with the list of signals. The structure is:
+        * keys : signal's name
+        * values :
+            * "width" : bit length of this signal
+            * "direction" : "in" or "out"
+            * "signal_obj" : MyHDL signal reference
+            * "description" : 
+            * Optional keys can be added to this dictionary.
+
+    Notes: 
+    * This object makes a MyHDL signal when method "add_signal" is used.
+    * This object implements a custom complement signal mechanism.
+    """
+    
+    def __init__(self, name, **kwargs):
+        intercon.__init__(self, name, **kwargs)
+        self.complement_mapping = {}
+        
+        self.intercon_type = "signalset"
+        self.complement = None
+        self.sideinfo = ""
+        
+    def add_signal(self, signalname, direction, bitwidth, signalref=None, complname=None, description=""):
+        """
+        Add a signal entry to signalset
+        
+        Arguments:
+        * signalname:
+        * direction: "in" or "out"
+        * bitwidth: must be >= 1
+        * signalref: optional MyHDL signal. If None, it will create a new signal.
+        * complname: optional complement signal name. This string will be 
+            returned on "get_complement_signal" method.
+        * description: 
+        
+        Returns: 
+        * The contents of signalref
+        """
+        intercon.add_signal(self, signalname, direction, bitwidth, signalref, description)
+
+        # need signal creation at this point
+        if signalref is None:
+            if bitwidth == 1:
+                signalref = Signal(bool(0))
+            else:
+                signalref = Signal(intbv(0)[bitwidth:])
+            self.signals[signalname]["signal_obj"] = signalref
+                
+        # complement signal mapping
+        if isinstance(complname, str):
+            self.complement_mapping[signalname] = complname
+        
+        return signalref
+        
+    def get_complement_signal(self, signalname):
+        """
+        Get the signal name that should be connected to this signal when 
+        connecting two signalref (or intercon). Return value depends on 
+        signal creation arguments (see "add_signal" method)
+        
+        Arguments:
+        * signalname: signal name of this intercon
+        
+        Return: a string with complementary signal name, or None if not found.
+        """
+        if signalname not in self.signals:
+            raise KeyError("Signal '%s' not found" % signalname)
+
+        if signalname in self.complement_mapping:
+            return self.complement_mapping[signalname]
+        else:
+            return None
+
+# network and transport layers
+class protocol():
     """
     Protocol base object
 
@@ -703,9 +1121,12 @@ class protocol(nocobject):
 
     Attributes:
     * name
+    * description : a string with a brief description
+    * long_desc : a long string with a detailed description, usually formatted
+      in reST (as any Python help string).
     
     Notes: 
-    * Optional arguments "packet_format" and "packet_order" can be
+    * Optional arguments "packet_format" can be
       added at object construction, but will not check its data consistency. 
       At the moment, we recommend using update_packet_field() method to
       fill this data structures.
@@ -717,44 +1138,54 @@ class protocol(nocobject):
         Notes:
         * Optional arguments will be added as object attributes.
         """
-        # NOTE: to avoid python version requirements (2.7), implement ordered 
-        # dict with an additional list. When we are sure of using 
-        # Python > 2.7 , change to collections.OrderedDict
         self.name = name
-        self.packet_format = {}
-        self.packet_order = []
+        self.packet_format = OrderedDict()
         self.packet_class = packet
+        self.packet_bitlen = 0
+        self.flit_bitlen = 0
+        self.flit_fixcount = 0
+        self.flit_padbits = 0
+        self.variable_packet = False
+        self.description = ""
+        self.long_desc = ""
         for key in kwargs.keys():
             setattr(self, key, kwargs[key])
             
-    def get_protocol_ref(self):
-        # override to use myself
-        return self
-        
+    def __repr__(self):
+        if self.name != "":
+            return "<%s '%s'>" % (self.__class__.__name__, self.name)
+        else:
+            return "<%s at '%d'>" % (self.__class__.__name__, id(self))
+            
     def update_packet_field(self, name, type, bitlen, description=""):
         """
         Add or update a packet field.
         
         Arguments
         * name
-        * type: string that can be "int", "fixed" or "float"
+        * type: string that can be "int", "uint", "fixed" or "float"
         * bitlen: bit length of this field
         * description: optional description of this field
         
         Notes: 
         * Each new field will be added at the end. 
+        * Fields are configured to have a bit range inside the packet,
+        *  starting at 0. Also, it refers to the fixed part of the packet.
+        * Fields "msb" and "lsb" are indexes relative to MSB bit of the first
+           field (Big endian scheme), completely different to a 
+           bit vector indexing. 
         """
-        if (type != "int") and (type != "fixed") and (type != "float"):
-            raise ValueError("Argument 'type' must be 'int', 'fixed' or 'float'.")
+        if type not in ("int", "uint", "fixed", "float"):
+            raise ValueError("Argument 'type' must be 'int', 'uint', 'fixed' or 'float'.")
         
         if name in self.packet_format:
             # update field
-            previdx = self.packet_order.index(name) - 1
+            previdx = self.packet_format.keys().index(name) - 1
             if previdx < 0:
                 # first field
                 lastbitpos = 0
             else:
-                lastbitpos = self.packet_format[self.packet_order[previdx]][lsb]
+                lastbitpos = self.packet_format[self.packet_format.keys()[previdx]]["lsb"]
             nextbitpos = lastbitpos + bitlen
             self.packet_format[name]["type"] = type
             self.packet_format[name]["position"] = previdx + 1
@@ -764,22 +1195,73 @@ class protocol(nocobject):
                 self.packet_format[name]["lsb"] = nextbitpos
                 self.packet_format[name]["msb"] = lastbitpos
                 # iterate through the rest of the fields adjusting lsb and msb
-                for idx in range(previdx+2, len(self.packet_order)):
-                    curname = self.packet_order[idx]
+                for idx in range(previdx+2, len(self.packet_format.keys())):
+                    curname = self.packet_format.keys()[idx]
                     curbitlen = self.packet_format[curname]["bitlen"] 
                     self.packet_format[curname]["lsb"] = nextbitpos + curbitlen
                     self.packet_format[curname]["msb"] = nextbitpos
                     nextbitpos += curbitlen
+            self.packet_bitlen = nextbitpos
         else:
             # append
             if len(self.packet_format) == 0:
                 lastbitpos = 0
             else:
-                lastbitpos = self.packet_format[self.packet_order[-1]]["lsb"]
+                lastbitpos = self.packet_format[self.packet_format.keys()[-1]]["lsb"] + 1
             nextbitpos = lastbitpos + bitlen
-            fieldpos = len(self.packet_order)
-            self.packet_format[name] = {"type": type, "position": fieldpos, "bitlen": bitlen, "lsb": nextbitpos, "msb": lastbitpos}
-            self.packet_order.append(name)
+            fieldpos = len(self.packet_format)
+            self.packet_format[name] = {"type": type, "position": fieldpos, "bitlen": bitlen, "lsb": nextbitpos - 1, "msb": lastbitpos}
+            self.packet_bitlen = nextbitpos
+            
+    def get_field_info(self, name):
+        """
+        Get information about a existing packet field.
+        
+        Arguments:
+        * name
+        Returns a dict with the following information:
+        * "type"
+        * "pkt_bitpos": absolute bit position in the packet (msb)
+        * "bitlen": bit size
+        * "flit_num": which flit use this field
+        * "flit_bitpos": bit position inside the flit
+        """
+        if name not in self.packet_format:
+            raise ValueError("Packet field '%s' not found." % name)
+        retinfo = {}
+        retinfo["type"] = self.packet_format[name]["type"]
+        retinfo["bitlen"] = self.packet_format[name]["bitlen"]
+        retinfo["pkt_bitpos"] = self.packet_format[name]["msb"]
+        if getattr(self, "flit_bitlen", 0) == 0:
+            # not using flits
+            retinfo["flit_num"] = 0
+            retinfo["flit_position"] = self.packet_format[name]["msb"]
+        else:
+            # CHECK THIS
+            retinfo["flit_num"] = int(self.packet_format[name]["msb"] / self.flit_bitlen)
+            retinfo["flit_position"] = self.packet_format[name]["msb"] - retinfo["flit_num"]
+        
+        return retinfo
+
+    def configure_flits(self, flit_size, variable_packet=False):
+        """
+        Configure the flit split in a packet.
+        
+        Arguments:
+        * flit_size: size in bits of a flit. Based on this size a packet
+          is split, and a zero padding added if necessary.
+        * variable_packet: If true, allows the packet to have a variable
+          packet size by adding additional flits at the end. 
+          
+        NOTE: variable packet mechanism is still under development.
+        """
+        if flit_size <= 0:
+            raise ValueError("Argument 'flit_size' must be greater than zero.")
+        self.flit_bitlen = flit_size
+        # calculate the number of flits of the fixed part of the packet
+        self.flit_fixcount = int(mathceil(float(self.packet_bitlen) / float(self.flit_bitlen)))
+        self.flit_padbits = (self.flit_fixcount*self.flit_bitlen) - self.packet_bitlen
+        self.variable_packet = variable_packet
         
     def newpacket(self, zerodefault=True, *args, **kwargs):
         """
@@ -798,7 +1280,7 @@ class protocol(nocobject):
           nameless arguments.
         """
         retpacket = self.packet_class(protocol_ref=self)
-        fieldlist = self.packet_order[:]
+        fieldlist = self.packet_format.keys()
         # first named arguments
         for fkey, fvalue in kwargs.iteritems():
             if fkey in fieldlist:
@@ -806,7 +1288,7 @@ class protocol(nocobject):
                 fieldlist.remove(fkey)
         # then nameless
         for fidx, fvalue in enumerate(args):
-            fkey = self.packet_order[fidx]
+            fkey = self.packet_format.keys()[fidx]
             if fkey in fieldlist:
                 retpacket[fkey] = fvalue
                 fieldlist.remove(fkey)
@@ -818,6 +1300,100 @@ class protocol(nocobject):
             else:
                 raise ValueError("Missing fields in argument list: %s" % repr(fieldlist))
         return retpacket
+    
+    def newpacket_frombinary(self, binaryinput):
+        """
+        Return a new packet based on a binary representation 
+        
+        Arguments:
+        * binaryinput: integer or intbv with the binary representation
+          of the packet.
+        """
+        if isinstance(binaryinput, (int, long)):
+            theinput = intbv(binaryinput)[self.packet_bitlen:]
+        elif isinstance(binaryinput, intbv):
+            theinput = binaryinput
+        else:
+            raise ValueError("Unsupported type for binaryinput: '%s'" % repr(type(binaryinput)))
+        retpacket = self.packet_class(protocol_ref=self)
+        for field, field_info in self.packet_format.iteritems():
+            # NOTE: msb and lsb indexes are referred as 0 as the MSB bit
+            # recalculate to have the LSB bit at 0
+            msb = self.packet_bitlen - field_info["msb"]
+            lsb = self.packet_bitlen - field_info["lsb"] - 1
+            if field_info["type"] == "int":
+                #retpacket[field] = theinput[msb:lsb].signed()
+                retpacket[field] = theinput[msb:lsb]
+            elif field_info["type"] == "uint":
+                retpacket[field] = theinput[msb:lsb]
+            else:
+                raise NotImplementedError("Field %s type %s not supported yet." % (field, field_info["type"]))
+        retpacket.prev_repr = binaryinput
+        return retpacket
+        
+    def newpacket_fromflits(self, flits_list):
+        """
+        Return a new packet based on a list of flits
+        
+        Arguments:
+        * flits_list: list of integers or intbv with the binary 
+          representation of each flit.
+        """
+        if not isinstance(flits_list, (list, tuple)):
+            raise ValueError("Unsupported type for flits_list: '%s'" % repr(type(flits_list)))
+        extracted = []
+        flit_curbit = self.flit_bitlen
+        flit_idx = 0
+        for field, field_info in self.packet_format.iteritems():
+            flit_val = intbv(0)[field_info["bitlen"]:]
+            
+            msb = flit_curbit
+            lsb = flit_curbit - field_info["bitlen"]
+            
+            if lsb < 0:
+                
+                # split packet field into several flits
+                lsb_pend = -lsb
+                
+                # first part
+                flit_val[:lsb_pend] = flits_list[flit_idx][flit_curbit:]
+
+                flit_idx += 1
+                flit_curbit = self.flit_bitlen
+                
+                while lsb_pend > 0:
+                    if lsb_pend >= self.flit_bitlen:
+                        flit_val[lsb_pend:lsb_pend-self.flit_bitlen] = flits_list[flit_idx]
+                        flit_idx += 1
+                        flit_curbit = self.flit_bitlen
+                        lsb_pend -= field_info["bitlen"]
+                    else:
+                        # last flit
+                        flit_val[lsb_pend:] = flits_list[flit_idx][:self.flit_bitlen-lsb_pend]
+                        flit_curbit -= lsb_pend
+                        lsb_pend = 0
+            else:
+                flit_val = flits_list[flit_idx][msb:lsb]
+                flit_curbit -= field_info["bitlen"]
+                
+            extracted.append(flit_val)
+            if lsb == 0:
+                # next flit
+                flit_idx += 1
+                flit_curbit = self.flit_bitlen
+
+        retpacket = self.packet_class(protocol_ref=self)
+        for field, content in zip(self.packet_format.keys(), extracted):
+            if self.packet_format[field]["type"] == "int":
+                #retpacket[field] = theinput[msb:lsb].signed()
+                retpacket[field] = content
+            elif self.packet_format[field]["type"] == "uint":
+                retpacket[field] = content
+            else:
+                raise NotImplementedError("Field %s type %s not supported yet." % (field, self.packet_format[field]["type"]))
+        retpacket.prev_repr = flits_list
+        return retpacket
+        
     def register_packet_generator(self, packet_class):
         """
         Register a special packet generator class.
@@ -842,13 +1418,120 @@ class packet(dict):
 
     Attributes:
     * protocol_ref: protocol object that created this object.
+    * prev_repr: previous representation of this packet. Can be:
+      - None: this packet was created by each field data
+      - <type long> : was created with a numeric representation.
+      - <type list> : was created with a list of flits
+      This attribute should only be changed by its protocol object.
     """
+    
+    # TODO: add support for flit construction: temporal storage for flits,
+    # and package construction after final flit
     
     # the constructor 
     def __init__(self, *args, **kwargs):
         # look for a protocol_ref key
         self.protocol_ref = kwargs.pop("protocol_ref", None)
+        self.prev_repr = None
         dict.__init__(self, *args, **kwargs)
+        
+        
+    # override copy method
+    def copy(self):
+        # Warning: take account of each element inside, specially if it's 
+        # a intbv
+        basedict = dict(**self)
+        for k, v in self.iteritems():
+            if isinstance(v, intbv):
+                # make a copy
+                basedict[k] = intbv(v)
+        # use same keys to build the new packet
+        pktobj = packet(**basedict)
+        pktobj.protocol_ref = self.protocol_ref
+        pktobj.prev_repr = self.prev_repr
+        return pktobj
+        
+    def get_flit_repr(self):
+        """
+        Returns a list of integers with the binary representation of the 
+        full packet contents, separated in flits.
+        """
+        protocol_ref = self.protocol_ref
+        binary_flits = [intbv(0)[protocol_ref.flit_bitlen:] for i in range(protocol_ref.flit_fixcount)]
+        flit_curbit = protocol_ref.flit_bitlen
+        flit_idx = 0
+        for field, field_info in protocol_ref.packet_format.iteritems():
+            if field_info["type"] == "int" or field_info["type"] == "uint":
+                bitvalue = intbv(self[field])[field_info["bitlen"]:]
+            elif field_info["type"] == "fixed":
+                raise NotImplementedError("Don't know how to put a fixed point in a binary representation.")
+            elif field_info["type"] == "float":
+                raise NotImplementedError("Don't know how to put a float in a binary representation.")
+                
+            #{"type": type, "position": fieldpos, "bitlen": bitlen, "lsb": nextbitpos, "msb": lastbitpos}
+            msb_flit = flit_curbit
+            lsb_flit = flit_curbit - field_info["bitlen"]
+            
+            if lsb_flit < 0:
+                # split packet field into several flits
+                lsb_flit_pend = -lsb_flit
+                
+                # first flit
+                binary_flits[flit_idx][msb_flit:] = bitvalue[field_info["bitlen"]:flit_curbit]
+                flit_idx += 1
+                flit_curbit = protocol_ref.flit_bitlen
+                while lsb_flit_pend > 0:
+                    if lsb_flit_pend >= protocol_ref.flit_bitlen:
+                        binary_flits[flit_idx] = bitvalue
+                        flit_idx += 1
+                        flit_curbit = protocol_ref.flit_bitlen
+                        lsb_flit_pend -= field_info["bitlen"]
+                    else:
+                        # last flit
+                        binary_flits[flit_idx][:protocol_ref.flit_bitlen - lsb_flit_pend] = bitvalue[lsb_flit_pend:]
+                        flit_curbit -= lsb_flit_pend
+                
+            else:
+                binary_flits[flit_idx][msb_flit:lsb_flit] = bitvalue
+                flit_curbit -= field_info["bitlen"]
+                
+            if lsb_flit == 0:
+                # next flit
+                flit_idx += 1
+                flit_curbit = protocol_ref.flit_bitlen
+            #print "integer repr: FIELD %s bitval %d b%s\n field info %s recalc msb %d lsb %d" % (field, bitvalue, bin(bitvalue), repr(field_info), msb, lsb)
+            
+            #print "integer repr: TEMP BIN %d b%s" % (binaryout, bin(binaryout))
+        #print "integer repr: FINAL BIN %d b%s" % (binaryout, bin(binaryout))
+        return binary_flits
+        
+    def get_integer_repr(self):
+        """
+        Returns an integer with the binary representation of the 
+        full packet contents.
+        """
+        protocol_ref = self.protocol_ref
+        #binaryout = 0
+        binaryout = intbv(0)[protocol_ref.packet_bitlen:]
+        for field, field_info in protocol_ref.packet_format.iteritems():
+            bitvalue = self[field]
+            #{"type": type, "position": fieldpos, "bitlen": bitlen, "lsb": nextbitpos, "msb": lastbitpos}
+            # NOTE: msb and lsb indexes are referred as 0 as the MSB bit
+            # recalculate to have the LSB bit at 0
+            msb = protocol_ref.packet_bitlen - field_info["msb"]
+            lsb = protocol_ref.packet_bitlen - field_info["lsb"] - 1
+            #print "integer repr: FIELD %s bitval %d b%s\n field info %s recalc msb %d lsb %d" % (field, bitvalue, bin(bitvalue), repr(field_info), msb, lsb)
+            if field_info["type"] == "int" or field_info["type"] == "uint":
+                #binaryout |= (bitvalue << lsb)
+                binaryout[msb:lsb] = intbv(bitvalue)[field_info["bitlen"]:]
+            elif field_info["type"] == "fixed":
+                raise NotImplementedError("Don't know how to put a fixed point in a binary representation.")
+            elif field_info["type"] == "float":
+                raise NotImplementedError("Don't know how to put a float in a binary representation.")
+            #print "integer repr: TEMP BIN %d b%s" % (binaryout, bin(binaryout))
+        #print "integer repr: FINAL BIN %d b%s" % (binaryout, bin(binaryout))
+        return binaryout
+        
     
 # *******************************
 # Additional functions

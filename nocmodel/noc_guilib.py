@@ -48,6 +48,7 @@ except:
     has_matplotlib = False
 
 import networkx as nx
+import warnings
 
 from noc_base import *
 
@@ -64,7 +65,7 @@ def draw_noc(noc, rectangular=True, nodepos=None):
       are tuples with x and y positions.
     """
     if not has_matplotlib:
-        print("Function not available")
+        warnings.warn("Function not available")
         return None
 
     # node positions
@@ -115,4 +116,5 @@ def draw_noc(noc, rectangular=True, nodepos=None):
         # box with ipcore labels
         ax.text(thepos[0]+ip_relpos[0], thepos[1]+ip_relpos[1], i.name, horizontalalignment="center", bbox=dict(facecolor='green', alpha=0.2))
 
+    # adjust axis TODO!
     plt.show()

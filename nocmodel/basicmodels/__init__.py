@@ -42,6 +42,8 @@ This package includes:
 * Module basic_ipcore
 * Module basic_protocol
 * Module basic_router
+* Module intercon_model
+* Module basic_noc_codegen
 """
 
 # provided modules
@@ -49,5 +51,7 @@ from basic_channel import *
 from basic_ipcore import *
 from basic_protocol import *
 from basic_router import *
+from intercon_model import *
+from basic_noc_codegen import *
 
 __version__ = "0.1"

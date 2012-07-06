@@ -37,7 +37,7 @@ import logging
 from nocmodel import *
 from nocmodel.basicmodels import *
 
-# Basic example model with TLM simulation
+# Basic example model with TBM simulation
 
 # 1. Create the model
 
@@ -61,52 +61,52 @@ for r in basicnoc.router_list():
     r.update_ports_info()
     r.update_routes_info()
 
-# 2. add tlm support, and configure logging
-add_tlm_basic_support(basicnoc, log_file="simulation.log", log_level=logging.DEBUG)
+# 2. add tbm support, and configure logging
+add_tbm_basic_support(basicnoc, log_file="simulation.log", log_level=logging.DEBUG)
 
-# 3. Declare generators to put in the TLM simulation
+# 3. Declare generators to put in the TBM simulation
 
 # set ip_cores functionality as myhdl generators
-def sourcegen(din, dout, tlm_ref, mydest, data=None, startdelay=100, period=100):
+def sourcegen(din, dout, tbm_ref, mydest, data=None, startdelay=100, period=100):
     # this generator only drives dout
     @myhdl.instance
     def putnewdata():
         datacount = 0
-        protocol_ref = tlm_ref.ipcore_ref.get_protocol_ref()
-        mysrc = tlm_ref.ipcore_ref.router_ref.address
-        tlm_ref.debug("sourcegen: init dout is %s" % repr(dout.val))
+        protocol_ref = tbm_ref.ipcore_ref.get_protocol_ref()
+        mysrc = tbm_ref.ipcore_ref.router_ref.address
+        tbm_ref.debug("sourcegen: init dout is %s" % repr(dout.val))
         yield myhdl.delay(startdelay)
         while True:
             if len(data) == datacount:
-                tlm_ref.debug("sourcegen: end of data. waiting for %d steps" % (period*10))
+                tbm_ref.debug("sourcegen: end of data. waiting for %d steps" % (period*10))
                 yield myhdl.delay(period*10)
                 raise myhdl.StopSimulation("data ended at time %d" % myhdl.now())
             dout.next = protocol_ref.newpacket(False, mysrc, mydest, data[datacount])
-            tlm_ref.debug("sourcegen: data next element %d dout is %s datacount is %d" % (data[datacount], repr(dout.val), datacount))
+            tbm_ref.debug("sourcegen: data next element %d dout is %s datacount is %d" % (data[datacount], repr(dout.val), datacount))
             yield myhdl.delay(period)
             datacount += 1
     return putnewdata
     
-def checkgen(din, dout, tlm_ref, mysrc, data=None):
+def checkgen(din, dout, tbm_ref, mysrc, data=None):
     # this generator only respond to din
     @myhdl.instance
     def checkdata():
         datacount = 0
-        protocol_ref = tlm_ref.ipcore_ref.get_protocol_ref()
-        mydest = tlm_ref.ipcore_ref.router_ref.address
+        protocol_ref = tbm_ref.ipcore_ref.get_protocol_ref()
+        mydest = tbm_ref.ipcore_ref.router_ref.address
         while True:
             yield din
             if len(data) > datacount:
                 checkdata = din.val["data"]
-                tlm_ref.debug("checkgen: assert checkdata != data[datacount] => %d != %d [%d]" % (checkdata, data[datacount], datacount))
+                tbm_ref.debug("checkgen: assert checkdata != data[datacount] => %d != %d [%d]" % (checkdata, data[datacount], datacount))
                 if checkdata != data[datacount]:
-                    tlm_ref.error("checkgen: value != %d (%d)" % (data[datacount], checkdata))
-                tlm_ref.debug("checkgen: assert source address != mysrc => %d != %d " % (din.val["src"], mysrc))
+                    tbm_ref.error("checkgen: value != %d (%d)" % (data[datacount], checkdata))
+                tbm_ref.debug("checkgen: assert source address != mysrc => %d != %d " % (din.val["src"], mysrc))
                 if din.val["src"] != mysrc:
-                    tlm_ref.error("checkgen: source address != %d (%d)" % (mysrc, din.val["src"]))
-                tlm_ref.debug("checkgen: assert destination address != mydest => %d != %d " % (din.val["dst"], mydest))
+                    tbm_ref.error("checkgen: source address != %d (%d)" % (mysrc, din.val["src"]))
+                tbm_ref.debug("checkgen: assert destination address != mydest => %d != %d " % (din.val["dst"], mydest))
                 if din.val["dst"] != mydest:
-                    tlm_ref.error("checkgen: destination address != %d (%d)" % (mydest, din.val["dst"]))
+                    tbm_ref.error("checkgen: destination address != %d (%d)" % (mydest, din.val["dst"]))
                 datacount += 1
     return checkdata
 
@@ -114,17 +114,17 @@ def checkgen(din, dout, tlm_ref, mysrc, data=None):
 R11_testdata = [5, 12, 50, -11, 6, 9, 0, 3, 25]
 R12_testdata = [x*5 for x in R11_testdata]
 
-# 5. assign generators to ip cores (in TLM model !)
+# 5. assign generators to ip cores (in TBM model !)
 # R11 will send to R22, R12 will send to R21
-R11.ipcore_ref.tlm.register_generator(sourcegen, mydest=R22.address, data=R11_testdata, startdelay=10, period=20)
-R12.ipcore_ref.tlm.register_generator(sourcegen, mydest=R21.address, data=R12_testdata, startdelay=15, period=25)
-R21.ipcore_ref.tlm.register_generator(checkgen, mysrc=R12.address, data=R12_testdata)
-R22.ipcore_ref.tlm.register_generator(checkgen, mysrc=R11.address, data=R11_testdata)
+R11.ipcore_ref.tbm.register_generator(sourcegen, mydest=R22.address, data=R11_testdata, startdelay=10, period=20)
+R12.ipcore_ref.tbm.register_generator(sourcegen, mydest=R21.address, data=R12_testdata, startdelay=15, period=25)
+R21.ipcore_ref.tbm.register_generator(checkgen, mysrc=R12.address, data=R12_testdata)
+R22.ipcore_ref.tbm.register_generator(checkgen, mysrc=R11.address, data=R11_testdata)
        
 # 6. configure simulation and run!
-basicnoc.tlmsim.configure_simulation(max_time=1000)
+basicnoc.tbmsim.configure_simulation(max_time=1000)
 print "Starting simulation..."
-basicnoc.tlmsim.run()
+basicnoc.tbmsim.run()
 print "Simulation finished. Pick the results in log files."
 
 # 7. View graphical representation

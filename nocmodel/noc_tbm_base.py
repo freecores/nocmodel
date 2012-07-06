@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 #
-# NoC TLM simulation support
-#   This module declares classes for Transaction Level Model simulation
+# NoC TBM simulation support
+#   This module declares classes for Transaction Based Model simulation
 #
 # Author:  Oscar Diaz
-# Version: 0.1
-# Date:    03-03-2011
+# Version: 0.2
+# Date:    17-03-2011
 
 #
 # This code is free software; you can redistribute it and/or
@@ -26,10 +26,23 @@
 # Boston, MA  02111-1307  USA
 #
 
-# Transaction model:
 #
-# Objects in a noc model have a "tlm" member
-# This "tlm" implements function send() and recv()
+# Changelog:
+#
+# 03-03-2011 : (OD) initial release
+#
+
+"""
+===============================
+NoCmodel TBM simulation support
+===============================
+  
+This module declares classes for Transaction Based Model simulation
+  
+* Class 'noc_tbm_base'
+* Class 'noc_tbm_simulation'
+* Class 'noc_tbm_errcodes'
+"""
 
 import networkx as nx
 import myhdl
@@ -37,14 +50,16 @@ import logging
 
 from noc_base import *
 
-class noc_tlm_base():
+import inspect
+
+class noc_tbm_base():
     """
-    Base class for NoC TLM simulator.
+    Base class for NoC TBM simulator.
     
-    This class add methods to a NoC object, required for the TLM model. Each 
+    This class add methods to a NoC object, required for the TBM model. Each 
     derived class must override the methods:
     
-    * __init__() : its constructor contains the object TLM model (data 
+    * __init__() : its constructor contains the object TBM model (data 
       structures, generators, etc).
     * send() 
     * recv()
@@ -55,11 +70,22 @@ class noc_tlm_base():
         self.log = logging.getLogger()
         self.logname = "BASECLASS"
         self.generators = []
+        self.tracesend = []
+        self.tracerecv = []
+
+    def __repr__(self):
+        if self.logname != "":
+            return "<%s '%s'>" % (self.__class__.__name__, self.logname)
+        else:
+            return "<%s at '%d'>" % (self.__class__.__name__, id(self))
 
     def get_generators(self):
         return self.generators
+        
+    def _do_build_generators(self):
+        self.generators.extend(self.build_generators())
     
-    # TLM main: every object must define this functions
+    # TBM main: every object must define this functions
     def send(self, src, dest, data, addattrs=None):
         """
         SEND method: this method MUST be called only by the local
@@ -80,7 +106,7 @@ class noc_tlm_base():
             relevant to the caller, an exception in case of attribute error
         """
         self.debug("-> send( %s , %s , %s , %s )" % (repr(src), repr(dest), repr(packet), repr(addattrs)))
-        return noc_tlm_errcodes.not_implemented
+        return noc_tbm_errcodes.not_implemented
 
     def recv(self, src, dest, data, addattrs=None):
         """
@@ -100,7 +126,7 @@ class noc_tlm_base():
             relevant to the caller, an exception in case of attribute error
         """
         self.debug("-> recv( %s , %s , %s , %s )" % (repr(src), repr(dest), repr(packet), repr(addattrs)))
-        return noc_tlm_errcodes.not_implemented
+        return noc_tbm_errcodes.not_implemented
     
     # logging methods (only use 4 levels)
     def debug(self, msg, *args, **kwargs):
@@ -120,10 +146,14 @@ class noc_tlm_base():
             if i[0] == "_":
                 continue
             self.debug("     ['%s'] = %s " % (i, repr(getattr(self, i))))
+    def generators_info(self):
+        self.debug(" Registered generators for '%s': " % repr(self))
+        for g in self.generators:
+            self.debug("     '%s': %s" % (getattr(g, "name", "-GEN-"), repr(g)))
 
-class noc_tlm_simulation():
+class noc_tbm_simulation():
     """
-    NoC TLM simulator object
+    NoC TBM simulator object
     
     This class manages the MyHDL simulation on a NoC object and its logging 
     support.
@@ -175,13 +205,35 @@ class noc_tlm_simulation():
         # myhdl simulation: extract all generators and prepare 
         # arguments
         for obj in self.noc_ref.all_list():
-            add_generators.extend(obj.tlm.get_generators())
+            prevcount = len(add_generators)
+            add_generators.extend(obj.tbm.get_generators())
+            #self.debug("configure_simulation: adding %d generators from object %s" % (len(add_generators)-prevcount, repr(obj)))
             if isinstance(obj, ipcore):
-                add_generators.extend(obj.channel_ref.tlm.get_generators())
+                add_generators.extend(obj.channel_ref.tbm.get_generators())
+                #self.debug("configure_simulation: plus ipcore channel: adding %d generators from object %s" % (len(add_generators)-prevcount, repr(obj.channel_ref)))
+        # --------------------------------
         # debug info
-        #self.debug("configure_simulation: list of generators:")
-        #for gen in add_generators:
-            #self.debug("configure_simulation:   generator '%s'" % repr(gen))
+        # TODO: try to get info about generators, particularly obtain origin 
+        # info about @always and @always_comb generators
+        #self.debug("configure_simulation: list of generators: (count = %d)" % len(add_generators))
+        #for genl in add_generators:
+            #if not isinstance(genl, list):
+                #gen2 = [genl]
+            #else:
+                #gen2 = genl
+                #self.debug("configure_simulation:   generator list '%s'" % repr(genl))
+            #for gen in gen2:
+                #self.debug("configure_simulation:   generator '%s'" % repr(gen))
+                #try:
+                    #self.debug("configure_simulation:   inspect info name '%s'" % gen.gen.__name__)
+                    #self.debug("configure_simulation:   inspect info locals '%s'" % repr(gen.gen.gi_frame.f_locals.keys()))
+                    #for k, v in gen.gen.gi_frame.f_locals.iteritems():
+                        #self.debug("configure_simulation:   inspect info locals[%s] '%s'" % (k, repr(v)))
+                    #if gen.gen.__name__ == "genfunc":
+                        #self.debug("configure_simulation:   inspect info deep name '%s'" % gen.func.__name__)
+                #except:
+                    #pass
+        # --------------------------------
         self.sim_object = myhdl.Simulation(*add_generators)
         self.sim_duration = max_time
         self.debug("configure_simulation: will run until simulation time '%d'" % max_time)
@@ -223,8 +275,8 @@ class noc_tlm_simulation():
                 return False
         # need a handler for each object
         for obj in self.noc_ref.all_list():
-            newfilter = ObjFilter(obj.tlm.logname)
-            newhandler = logging.FileHandler("%s_%s.log" % (basefilename, obj.tlm.logname), "w")
+            newfilter = ObjFilter(obj.tbm.logname)
+            newhandler = logging.FileHandler("%s_%s.log" % (basefilename, obj.tbm.logname), "w")
             newhandler.setLevel(log_level)
             newhandler.addFilter(newfilter)
             newhandler.setFormatter(self.noc_formatter)
@@ -243,13 +295,14 @@ class noc_tlm_simulation():
         # TopNoC will not be added to this set
         self.debug("Special logging enabled. basefilename=%s level %s" % (basefilename, logging._levelNames[log_level]))
 
-class noc_tlm_errcodes():
+class noc_tbm_errcodes():
     """
     Common error codes definition
     """
     no_error = 0
     full_fifo = -1
     packet_bad_data = -2
-    tlm_badcall_recv = -3
-    tlm_badcall_send = -4
-    not_implemented = -5
+    tbm_badcall_recv = -3
+    tbm_badcall_send = -4
+    tbm_busy_channel = -5
+    not_implemented = -15
